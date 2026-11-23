@@ -174,8 +174,8 @@ fieldset.f{border:0;margin:0;padding:0}
 #gateMsg{margin:0;font-size:15px;max-width:40ch}
 #gateForm{display:flex;flex-direction:column;gap:18px}
 #gateForm[hidden]{display:none}
-.f input[type=email]{border:0;border-bottom:1px solid var(--ink);background:none;padding:6px 0;border-radius:0;width:100%;font-size:17px}
-.f input[type=email]:focus{outline:0;border-bottom-color:var(--red)}
+.f input[type=password]{border:0;border-bottom:1px solid var(--ink);background:none;padding:6px 0;border-radius:0;width:100%;font-size:17px}
+.f input[type=password]:focus{outline:0;border-bottom-color:var(--red)}
 #gate button{align-self:flex-start;padding:6px 0;border-bottom:1px solid var(--ink)}
 #out{color:var(--mute);padding:6px 0}
 #out:hover{color:var(--ink)}
@@ -235,8 +235,8 @@ fieldset.f{border:0;margin:0;padding:0}
     </div>
     <p id="gateMsg">Chargement.</p>
     <form id="gateForm" hidden>
-      <label class="f"><span class="cap">Votre e-mail</span><input type="email" id="gateEmail" required autocomplete="email"></label>
-      <button type="submit" class="cap">Recevoir le lien de connexion</button>
+      <label class="f"><span class="cap">Mot de passe</span><input type="password" id="gatePw" required autocomplete="current-password"></label>
+      <button type="submit" class="cap">Entrer</button>
     </form>
     <button type="button" id="gateOut" class="cap" hidden>Utiliser une autre adresse</button>
   </div>
@@ -398,17 +398,18 @@ function gate(mode,who){
   if(!mode){g.classList.remove('on');return;}
   g.classList.add('on'); f.hidden=true; o.hidden=true; $('loader').hidden=mode!=='load';
   if(mode==='config') m.textContent="Ce site n'est pas encore relié à sa base de données. Renseignez l'adresse et la clé du projet dans le fichier config.js.";
-  else if(mode==='login'){ m.textContent="Espace de travail de la rédaction. Entrez votre e-mail pour recevoir un lien de connexion."; f.hidden=false; }
+  else if(mode==='login'){ m.textContent=who||"Espace de travail de la rédaction."; f.hidden=false; setTimeout(()=>{try{$('gatePw').focus();}catch(e){}},0); }
   else if(mode==='sent'){ m.textContent='Lien envoyé à '+who+'. Ouvrez-le sur cet appareil pour entrer.'; o.hidden=false; }
   else if(mode==='denied'){ m.textContent=who+" ne fait pas partie de l'équipe du tableau. Demandez à être ajouté, puis rechargez la page."; o.hidden=false; }
   else if(mode==='error'){ m.textContent="La base de données ne répond pas. Vérifiez la connexion, puis rechargez la page."; }
 }
 $('gateForm').addEventListener('submit',async e=>{
-  e.preventDefault(); const email=$('gateEmail').value.trim(); if(!email||!sb) return;
-  gate('load'); $('gateMsg').textContent='Envoi du lien.';
-  const r=await sb.auth.signInWithOtp({email,options:{emailRedirectTo:location.origin+location.pathname}});
-  if(r.error){ gate('login'); $('gateMsg').textContent="L'envoi n'a pas abouti. Attendez une minute puis réessayez."; }
-  else gate('sent',email);
+  e.preventDefault(); const pw=$('gatePw').value, cfg=window.SM_CONFIG||{}; if(!pw||!sb) return;
+  gate('load'); $('gateMsg').textContent='Vérification.';
+  let r; try{ r=await sb.auth.signInWithPassword({email:cfg.team,password:pw}); }catch(err){ r={error:err}; }
+  $('gatePw').value='';
+  if(r.error){ const bad=r.error.status===400||/invalid/i.test(r.error.message||''); gate('login',bad?'Mot de passe incorrect.':"La connexion n'a pas abouti. Vérifiez le réseau puis réessayez."); }
+  else if(r.data&&r.data.session) start(r.data.session);
 });
 async function signOut(){ try{await sb.auth.signOut();}catch(e){} location.reload(); }
 $('gateOut').onclick=()=>{ if(started||!sb) location.reload(); else sb.auth.getSession().then(r=>{ if(r.data&&r.data.session) signOut(); else gate('login'); }); };
@@ -416,7 +417,7 @@ $('out').onclick=signOut;
 
 async function connect(){
   const cfg=window.SM_CONFIG||{};
-  if(!window.supabase||!cfg.url||!cfg.key||/VOTRE/.test(cfg.url+cfg.key)){ gate('config'); return; }
+  if(!window.supabase||!cfg.url||!cfg.key||!cfg.team||/VOTRE/.test(cfg.url+cfg.key)){ gate('config'); return; }
   sb=window.supabase.createClient(cfg.url,cfg.key);
   sb.auth.onAuthStateChange((ev,session)=>{ if(session&&!started) setTimeout(()=>start(session),0); });
   let r; try{ r=await sb.auth.getSession(); }catch(e){ gate('error'); return; }
