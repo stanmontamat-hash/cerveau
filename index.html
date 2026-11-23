@@ -54,10 +54,11 @@ main{flex:1;min-height:0;position:relative}
 .view.on{display:block}
 
 /* ---------- tableau ---------- */
-#board{overflow:hidden;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none}
+#board{background:var(--wash);overflow:hidden;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none}
 #board.panning{cursor:grabbing}
 #board.over::after{content:"";position:absolute;inset:10px;border:1px dashed var(--red);pointer-events:none}
-#world{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+#sheet{position:absolute;left:0;top:0;background:var(--paper);outline:1px solid var(--line);pointer-events:none}
+#world{position:absolute;left:0;top:0;transform-origin:0 0}
 .it{position:absolute;cursor:default;outline:1px solid transparent;outline-offset:6px}
 .it:hover{outline-color:var(--line)}
 .it.sel{outline-color:var(--red)}
@@ -244,7 +245,7 @@ fieldset.f{border:0;margin:0;padding:0}
 
 <main>
   <section class="view" id="board" aria-label="Tableau">
-    <div id="world"></div>
+    <div id="world"><div id="sheet"></div></div>
     <div id="empty">
       <h2>Déposez ici ce que vous aimez</h2>
       <p>Glissez des images depuis votre ordinateur, collez un lien ou une phrase, double-cliquez pour écrire.</p>
@@ -327,6 +328,8 @@ const EPOCH=1767225600000;
 const nz=()=>Math.floor((Date.now()-EPOCH)/100);
 const newId=()=>'i'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const BW=10000, BH=7000, EDGE=90;   // the board is a finite sheet
+$('sheet').style.width=BW+'px'; $('sheet').style.height=BH+'px';
 
 /* ---------- state ---------- */
 const items=new Map(), els=new Map(), localSrc=new Map();
@@ -461,7 +464,16 @@ async function start(session){
 
 /* ---------- viewport ---------- */
 let viewT=0;
+function minS(){const r=board.getBoundingClientRect();return clamp(Math.min((r.width-EDGE*2)/BW,(r.height-EDGE*2)/BH),.02,1);}
+function clampView(){
+  const r=board.getBoundingClientRect(); if(!r.width) return;
+  view.s=clamp(view.s,minS(),4); const w=BW*view.s, h=BH*view.s;
+  view.x=w+EDGE*2<=r.width?(r.width-w)/2:clamp(view.x,r.width-w-EDGE,EDGE);
+  view.y=h+EDGE*2<=r.height?(r.height-h)/2:clamp(view.y,r.height-h-EDGE,EDGE);
+}
+function inSheet(d,el){ const h=el?el.offsetHeight:40; d.w=Math.min(d.w,BW); d.x=clamp(d.x,0,BW-d.w); d.y=clamp(d.y,0,Math.max(0,BH-h)); }
 function applyView(){
+  clampView();
   world.style.transform='translate('+view.x+'px,'+view.y+'px) scale('+view.s+')';
   $('zVal').textContent=Math.round(view.s*100)+' %';
   clearTimeout(viewT); viewT=setTimeout(()=>{try{localStorage.setItem('sm-view2',JSON.stringify(view));}catch(e){}},400);
@@ -469,12 +481,12 @@ function applyView(){
 function toWorld(cx,cy){const r=board.getBoundingClientRect();return {x:(cx-r.left-view.x)/view.s,y:(cy-r.top-view.y)/view.s};}
 function centerWorld(){const r=board.getBoundingClientRect();return toWorld(r.left+r.width/2,r.top+r.height/2);}
 function zoomAt(cx,cy,f){
-  const r=board.getBoundingClientRect(), px=cx-r.left, py=cy-r.top, s=clamp(view.s*f,.08,4);
+  const r=board.getBoundingClientRect(), px=cx-r.left, py=cy-r.top, s=clamp(view.s*f,minS(),4);
   view.x=px-(px-view.x)/view.s*s; view.y=py-(py-view.y)/view.s*s; view.s=s; applyView();
 }
 function zoomCenter(f){const r=board.getBoundingClientRect();zoomAt(r.left+r.width/2,r.top+r.height/2,f);}
 function fitAll(){
-  if(!items.size){view={x:0,y:0,s:1};applyView();return;}
+  if(!items.size){view={x:0,y:0,s:minS()};applyView();return;}
   let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
   for(const [id,d] of items){const el=els.get(id);const h=el?el.offsetHeight:100;
     x0=Math.min(x0,d.x);y0=Math.min(y0,d.y);x1=Math.max(x1,d.x+d.w);y1=Math.max(y1,d.y+h);}
@@ -539,7 +551,7 @@ function addItem(d,at){
   const p=at||centerWorld(), id=newId();
   const base={x:Math.round(p.x-(d.w||240)/2),y:Math.round(p.y-20),w:240,z:nz(),by:uid};
   if(!at){ for(let i=0;i<40;i++){ let hit=false; for(const o of items.values()){ if(Math.abs(o.x-base.x)<24&&Math.abs(o.y-base.y)<24){hit=true;break;} } if(!hit) break; base.x+=44; base.y+=44; } }
-  items.set(id,Object.assign(base,d)); renderItem(id); afterItems(); select(id); return id;
+  items.set(id,Object.assign(base,d)); inSheet(items.get(id),null); renderItem(id); afterItems(); select(id); return id;
 }
 function startEdit(id){
   const d=items.get(id), el=els.get(id); if(!d||ro||!el) return; const tx=el.querySelector('.tx'); if(!tx) return;
@@ -660,15 +672,15 @@ board.addEventListener('pointermove',e=>{
   if(!act) return;
   if(act.kind==='pinch'){
     if(ptrs.size<2) return; const [a,b]=[...ptrs.values()], r=board.getBoundingClientRect();
-    const s=clamp(act.s0*Math.hypot(a.x-b.x,a.y-b.y)/act.d0,.08,4), cx=(a.x+b.x)/2-r.left, cy=(a.y+b.y)/2-r.top;
+    const s=clamp(act.s0*Math.hypot(a.x-b.x,a.y-b.y)/act.d0,minS(),4), cx=(a.x+b.x)/2-r.left, cy=(a.y+b.y)/2-r.top;
     view.x=cx-(act.cx-r.left-act.vx)/act.s0*s; view.y=cy-(act.cy-r.top-act.vy)/act.s0*s; view.s=s; applyView(); return;
   }
   const dx=e.clientX-act.sx, dy=e.clientY-act.sy;
   if(act.kind==='pan'){view.x=act.ox+dx;view.y=act.oy+dy;applyView();return;}
   if(!act.moved&&Math.hypot(dx,dy)<3) return; act.moved=true;
   const d=items.get(act.id), el=els.get(act.id); if(!d||!el) return;
-  if(act.kind==='drag'){d.x=Math.round(act.ox+dx/view.s);d.y=Math.round(act.oy+dy/view.s);el.style.left=d.x+'px';el.style.top=d.y+'px';}
-  else{d.w=Math.round(clamp(act.ow+dx/view.s,60,3000));el.style.width=d.w+'px';}
+  if(act.kind==='drag'){d.x=Math.round(act.ox+dx/view.s);d.y=Math.round(act.oy+dy/view.s);inSheet(d,el);el.style.left=d.x+'px';el.style.top=d.y+'px';}
+  else{d.w=Math.round(clamp(act.ow+dx/view.s,60,Math.min(3000,BW-d.x)));el.style.width=d.w+'px';}
 });
 function endPtr(e){
   ptrs.delete(e.pointerId); if(!act) return;
@@ -792,11 +804,12 @@ $('cMinus').onclick=()=>setCount(meta.count-4); $('cPlus').onclick=()=>setCount(
 /* ---------- routing ---------- */
 function route(){
   const plan=location.hash==='#chemin-de-fer';
-  $('plan').classList.toggle('on',plan); board.classList.toggle('on',!plan);
+  $('plan').classList.toggle('on',plan); board.classList.toggle('on',!plan); if(!plan) applyView();
   $('navPlan').toggleAttribute('aria-current',plan); $('navBoard').toggleAttribute('aria-current',!plan);
   if(plan){$('navPlan').setAttribute('aria-current','page');renderPlan();} else $('navBoard').setAttribute('aria-current','page');
 }
 addEventListener('hashchange',route);
+addEventListener('resize',applyView);
 
 route(); applyView(); afterItems(); renderPlan(); connect();
 })();
