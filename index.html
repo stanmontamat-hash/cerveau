@@ -281,6 +281,7 @@ fieldset.f{border:0;margin:0;padding:0}
       <button type="button" id="selFront">Devant</button>
       <label for="selPage" id="selPageWrap">Page <input type="number" id="selPage" min="1" inputmode="numeric" placeholder="–"></label>
       <label for="selColor" id="selColorWrap">Teinte <input type="color" id="selColor"></label>
+      <button type="button" id="selOut">Sortir de la bulle</button>
       <button type="button" id="selDup">Dupliquer</button>
       <button type="button" id="selDel" class="del">Supprimer</button>
     </div>
@@ -350,7 +351,7 @@ const EPOCH=1767225600000;
 const nz=()=>Math.floor((Date.now()-EPOCH)/100);
 const newId=()=>'i'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
-const BW=240000, BH=160000, EDGE=90;   // the board is a finite sheet
+const BW=60000, BH=40000, EDGE=90;   // the board is a finite sheet
 $('sheet').style.width=BW+'px'; $('sheet').style.height=BH+'px';
 
 /* ---------- state ---------- */
@@ -560,11 +561,24 @@ function renderItem(id){
 }
 let planT=0;
 function afterItems(){ $('empty').classList.toggle('on',items.size===0); clearTimeout(planT); planT=setTimeout(()=>{renderPlan();fillRefs();},150); }
-function inside(bid){   // what a bubble carries: every other element whose centre sits in the circle
-  const b=items.get(bid), out=[]; if(!b) return out; const r=b.w/2, cx=b.x+r, cy=b.y+r;
-  for(const [id,d] of items){ if(id===bid||d.wait) continue; const el=els.get(id), h=el?el.offsetHeight:d.w;
-    if(Math.hypot(d.x+d.w/2-cx,d.y+h/2-cy)<=r&&(d.type!=='bulle'||d.w<b.w)) out.push({id,x:d.x,y:d.y}); }
+function inside(bid,seen){   // what a bubble carries: only the elements that were put into it, never what merely lies under it
+  const out=[]; seen=seen||new Set([bid]);
+  for(const [id,d] of items){ if(d.in!==bid||d.wait||seen.has(id)) continue; seen.add(id); out.push({id,x:d.x,y:d.y}); if(d.type==='bulle') out.push(...inside(id,seen)); }
   return out;
+}
+function bubbleAt(id){   // the smallest bubble whose circle holds this element's centre
+  const d=items.get(id), el=els.get(id); if(!d) return null; const h=d.type==='bulle'?d.w:(el?el.offsetHeight:d.w), cx=d.x+d.w/2, cy=d.y+h/2; let best=null;
+  for(const [bid,b] of items){ if(bid===id||b.type!=='bulle'||(d.type==='bulle'&&b.w<=d.w)) continue; const r=b.w/2;
+    if(Math.hypot(cx-(b.x+r),cy-(b.y+r))<=r&&(!best||b.w<items.get(best).w)) best=bid; }
+  return best;
+}
+function settle(ids){   // after a deliberate drop: join the bubble the element was put into, leave the one it was taken out of
+  let inN=0,outN=0,name='';
+  for(const id of ids){ const d=items.get(id); if(!d) continue; const b=bubbleAt(id), cur=d.in&&items.has(d.in)?d.in:null;
+    if(b===cur){ if(d.in&&!cur) delete d.in; continue; }
+    if(b){ d.in=b; inN++; name=items.get(b).text||''; } else { delete d.in; outN++; } }
+  if(inN) toast((inN>1?inN+' éléments ajoutés':'Ajouté')+' à la bulle'+(name?' « '+name+' »':'')+'.',null,null,2200);
+  else if(outN) toast((outN>1?outN+' éléments sortis':'Sorti')+' de la bulle.',null,null,2200);
 }
 function select(id,toggle){
   if(!toggle){ if(selSet.size===1&&sel===id) return; for(const o of selSet){const e=els.get(o); e&&e.classList.remove('sel');} selSet.clear(); if(id) selSet.add(id); sel=id||null; }
@@ -577,6 +591,7 @@ function updateSelBar(){
   const d=sel&&items.get(sel), many=selSet.size>1; $('selbar').classList.toggle('on',!!d&&!ro&&!editing); if(!d) return;
   $('selCount').textContent=many?selSet.size+' éléments':''; $('selCount').style.display=many?'':'none';
   $('selPageWrap').style.display=many?'none':'';
+  $('selOut').style.display=[...selSet].some(o=>{const x=items.get(o);return x&&x.in&&items.has(x.in);})?'':'none';
   if(document.activeElement!==$('selPage')) $('selPage').value=d.page>0?d.page:'';
   $('selColorWrap').style.display=!many&&d.type==='couleur'?'':'none';
   if(d.type==='couleur') $('selColor').value=HEX.test(d.color)?d.color:'#e3241b';
@@ -598,6 +613,7 @@ function addItem(d,at){
   const base={x:Math.round(p.x-(d.w||240)/2),y:Math.round(p.y-20),w:240,z:nz(),by:uid};
   if(!at){ for(let i=0;i<40;i++){ let hit=false; for(const o of items.values()){ if(Math.abs(o.x-base.x)<24&&Math.abs(o.y-base.y)<24){hit=true;break;} } if(!hit) break; base.x+=44; base.y+=44; } }
   items.set(id,Object.assign(base,d)); inSheet(items.get(id),null); renderItem(id); afterItems(); select(id);
+  if(d.type!=='bulle'){ const b=bubbleAt(id); if(b) items.get(id).in=b; }
   if(d.text==='') fresh.add(id); else if(!d.wait) record([{id,before:null,after:clean(items.get(id))}]);
   return id;
 }
@@ -681,6 +697,7 @@ function editSel(fn){ const ch=[]; for(const id of chosen()){ const d=items.get(
 $('selFront').onclick=()=>{ let z=nz(); editSel(d=>{ d.z=z++; }); };
 $('selDup').onclick=()=>{ const ch=[], ids=[]; for(const sid of chosen()){ const d=items.get(sid); if(d.type==='image'&&!d.img) continue; const c=Object.assign({},d); c.x=d.x+28; c.y=d.y+28; c.z=nz(); const id=newId(); items.set(id,c); inSheet(c,els.get(sid)); renderItem(id); saveItem(id); ch.push({id,before:null,after:clean(c)}); ids.push(id); }
   record(ch); if(ids.length) selectMany(ids); afterItems(); };
+$('selOut').onclick=()=>{ editSel(d=>{ delete d.in; }); updateSelBar(); toast('Sorti de la bulle.',null,null,2000); };
 $('selDel').onclick=()=>delSel();
 $('selPage').addEventListener('change',e=>{ const n=parseInt(e.target.value,10);
   if(!(n>=1&&n<=meta.count)){ e.target.value=''; if(n>meta.count) toast('Ce numéro compte '+meta.count+' pages.'); }
@@ -719,7 +736,7 @@ board.addEventListener('pointerdown',e=>{
       const kids=new Map(); const add=k=>{ if(k.id!==id&&!kids.has(k.id)) kids.set(k.id,k); };
       for(const o of selSet){ const od=items.get(o); if(!od||od.wait) continue; add({id:o,x:od.x,y:od.y}); if(od.type==='bulle') inside(o).forEach(add); }
       if(d.type==='bulle') inside(id).forEach(add);
-      act.kids=[...kids.values()];
+      act.kids=[...kids.values()]; act.direct=[id,...[...selSet].filter(o=>o!==id)];
       for(const k of act.kids) act.snap.set(k.id,clean(items.get(k.id)));
     }
     act.snap.set(id,clean(d));
@@ -763,7 +780,7 @@ function endPtr(e){
     if(act.box){ const [x0,y0,x1,y1]=act.box; for(const [id,el] of els){ const d=items.get(id); if(!d||d.wait) continue; const b=el.getBoundingClientRect();
       const hit=d.type==='bulle'?(b.left>=x0&&b.right<=x1&&b.top>=y0&&b.bottom<=y1):(b.right>=x0&&b.left<=x1&&b.bottom>=y0&&b.top<=y1); if(hit) ids.add(id); } }
     selectMany(ids); act=null; return; }
-  if((act.kind==='drag'||act.kind==='resize')&&act.moved){ const ch=[]; for(const [id,b] of act.snap){ const d=items.get(id); if(!d) continue; saveItem(id); ch.push({id,before:b,after:clean(d)}); } record(ch); }
+  if((act.kind==='drag'||act.kind==='resize')&&act.moved){ if(act.kind==='drag'&&act.direct) settle(act.direct); const ch=[]; for(const [id,b] of act.snap){ const d=items.get(id); if(!d) continue; saveItem(id); ch.push({id,before:b,after:clean(d)}); } record(ch); updateSelBar(); }
   board.classList.remove('panning'); act=null;
 }
 board.addEventListener('pointerup',endPtr); board.addEventListener('pointercancel',endPtr);
